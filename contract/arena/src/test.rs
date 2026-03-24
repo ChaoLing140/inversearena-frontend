@@ -6,8 +6,8 @@ use std::vec::Vec;
 use super::*;
 use proptest::prelude::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _, LedgerInfo},
     Address, BytesN, Env,
+    testutils::{Address as _, Ledger as _, LedgerInfo},
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -155,6 +155,7 @@ fn start_round_records_start_and_deadline_ledgers() {
             active: true,
             total_submissions: 0,
             timed_out: false,
+            finished: false,
         }
     );
 }
@@ -1091,6 +1092,93 @@ fn partial_submissions_preserved_after_timeout() {
     assert_eq!(client.get_choice(&1, &player_c), None); // absent
 }
 
+// ── Claim and Payout tests ────────────────────────────────────────────────────
+
+use soroban_sdk::token::Client as TokenClient;
+use soroban_sdk::token::StellarAssetClient;
+
+fn setup_token(env: &Env, admin: &Address) -> (TokenClient<'static>, Address) {
+    let contract_id = env.register_stellar_asset_contract(admin.clone());
+    let token = TokenClient::new(env, &contract_id);
+    let asset = StellarAssetClient::new(env, &contract_id);
+    (token, contract_id)
+}
+
+#[test]
+fn claim_success_winner_receives_balance() {
+    let (env, admin, client) = setup_with_admin();
+
+    // Set up Token
+    let (token, token_id) = setup_token(&env, &admin);
+    let asset = StellarAssetClient::new(&env, &token_id);
+
+    // Mint tokens to the arena contract
+    let arena_addr = client.address.clone();
+    asset.mint(&arena_addr, &1000);
+
+    client.set_token(&token_id);
+
+    let player = Address::generate(&env);
+    client.init(&5);
+    client.start_round();
+
+    // Admin sets winner (stake=100, yield=25)
+    env.mock_all_auths();
+    client.set_winner(&player, &100, &25);
+
+    // Player claims
+    client.claim(&player);
+
+    // Winner receives correct token balance (stake + yield)
+    assert_eq!(token.balance(&player), 125);
+
+    // Remaining balance in arena
+    assert_eq!(token.balance(&arena_addr), 1000 - 125);
+
+    // Game status set to Finished after claim
+    let round = client.get_round();
+    assert!(round.finished);
+}
+
+#[test]
+fn claim_reverts_for_non_winner() {
+    let (env, admin, client) = setup_with_admin();
+    let (token, token_id) = setup_token(&env, &admin);
+    let asset = StellarAssetClient::new(&env, &token_id);
+    asset.mint(&client.address, &1000);
+    client.set_token(&token_id);
+    client.init(&5);
+    client.start_round();
+
+    let non_winner = Address::generate(&env);
+
+    env.mock_all_auths();
+    let res = client.try_claim(&non_winner);
+    assert_eq!(res, Err(Ok(ArenaError::NothingToClaim)));
+}
+
+#[test]
+fn double_claim_reverts() {
+    let (env, admin, client) = setup_with_admin();
+    let (token, token_id) = setup_token(&env, &admin);
+    let asset = StellarAssetClient::new(&env, &token_id);
+    asset.mint(&client.address, &1000);
+    client.set_token(&token_id);
+    client.init(&5);
+    client.start_round();
+
+    let player = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.set_winner(&player, &100, &10);
+
+    // First claim succeeds
+    client.claim(&player);
+    assert_eq!(token.balance(&player), 110);
+
+    // Second claim reverts
+    let res = client.try_claim(&player);
+    assert_eq!(res, Err(Ok(ArenaError::AlreadyClaimed)));
 // ── Pause mechanism tests ───────────────────────────────────────────────────
 
 #[test]

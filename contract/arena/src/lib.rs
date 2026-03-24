@@ -1,7 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol,
+    Address, BytesN, Env, Symbol, contract, contracterror, contractimpl, contracttype,
+    symbol_short, token,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -77,6 +78,7 @@ pub struct RoundState {
     pub active: bool,
     pub total_submissions: u32,
     pub timed_out: bool,
+    pub finished: bool,
 }
 
 #[contracttype]
@@ -140,11 +142,72 @@ impl ArenaContract {
                 active: false,
                 total_submissions: 0,
                 timed_out: false,
+                finished: false,
             },
         );
         bump(&env, &DataKey::Round);
 
         Ok(())
+    }
+
+    // ── Token and Payouts ────────────────────────────────────────────────────
+
+    pub fn set_token(env: Env, token: Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .expect("not initialized");
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Token, &token);
+    }
+
+    pub fn set_winner(env: Env, player: Address, stake: i128, yield_comp: i128) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .expect("not initialized");
+        admin.require_auth();
+        storage(&env).set(&DataKey::Winner(player.clone()), &(stake, yield_comp));
+        bump(&env, &DataKey::Winner(player));
+    }
+
+    pub fn claim(env: Env, player: Address) -> Result<(), ArenaError> {
+        env.storage()
+            .instance()
+            .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
+        player.require_auth();
+
+        if storage(&env).has(&DataKey::Claimed(player.clone())) {
+            return Err(ArenaError::AlreadyClaimed);
+        }
+
+        let winner_data: Option<(i128, i128)> = storage(&env).get(&DataKey::Winner(player.clone()));
+        match winner_data {
+            Some((stake, yield_comp)) => {
+                let token: Address = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Token)
+                    .expect("token not set");
+                let token_client = token::Client::new(&env, &token);
+
+                let total_payout = stake + yield_comp;
+                token_client.transfer(&env.current_contract_address(), &player, &total_payout);
+
+                storage(&env).set(&DataKey::Claimed(player.clone()), &true);
+                bump(&env, &DataKey::Claimed(player.clone()));
+
+                let mut round = get_round(&env)?;
+                round.finished = true;
+                storage(&env).set(&DataKey::Round, &round);
+                bump(&env, &DataKey::Round);
+
+                Ok(())
+            }
+            None => Err(ArenaError::NothingToClaim),
+        }
     }
 
     // ── Admin ────────────────────────────────────────────────────────────────
@@ -277,6 +340,7 @@ impl ArenaContract {
             active: true,
             total_submissions: 0,
             timed_out: false,
+            finished: false,
         };
 
         storage(&env).set(&DataKey::Round, &next_round);
