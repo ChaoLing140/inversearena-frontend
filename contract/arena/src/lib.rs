@@ -28,6 +28,7 @@ const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
 const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
 const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
+const TOPIC_GAME_ENDED: Symbol = symbol_short!("G_END");
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -51,6 +52,9 @@ pub enum ArenaError {
     NoPrizeToClaim = 14,
     AlreadyClaimed = 15,
     ReentrancyGuard = 16,
+    NotASurvivor = 17,
+    GameAlreadyFinished = 18,
+    TokenNotSet = 19,
 }
 
 #[contracttype]
@@ -297,8 +301,39 @@ impl ArenaContract {
             return Err(ArenaError::AlreadyJoined);
         }
 
+        // Token must be configured before players can join.
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&TOKEN_KEY)
+            .ok_or(ArenaError::TokenNotSet)?;
+
+        // Pull stake from player into this contract.
+        TokenClient::new(&env, &token).transfer(&player, &env.current_contract_address(), &amount);
+
+        // Register survivor.
         storage(&env).set(&survivor_key, &());
         bump(&env, &survivor_key);
+
+        // Increment survivor count.
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&SURVIVOR_COUNT_KEY)
+            .unwrap_or(0u32);
+        env.storage()
+            .instance()
+            .set(&SURVIVOR_COUNT_KEY, &(count + 1));
+
+        // Accumulate prize pool.
+        let pool: i128 = env
+            .storage()
+            .instance()
+            .get(&PRIZE_POOL_KEY)
+            .unwrap_or(0i128);
+        env.storage()
+            .instance()
+            .set(&PRIZE_POOL_KEY, &(pool + amount));
 
         Ok(())
     }

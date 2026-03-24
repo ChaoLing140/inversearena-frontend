@@ -38,6 +38,8 @@ File: `contract/arena/src/lib.rs`
 | `DataKey::Config` | `ArenaConfig` | Round speed configuration; written once on `init` |
 | `DataKey::Round` | `RoundState` | Active round state (number, ledgers, submission count, flags) |
 | `DataKey::Submission(round_number, player)` | `Choice` | A player's Heads/Tails choice for a given round |
+| `DataKey::Survivor(player)` | `()` | Marker set when a player successfully joins; used to verify eligibility in `claim` |
+| `DataKey::PrizeClaimed(winner)` | `i128` | Records the prize amount claimed by the winner; prevents double-claim |
 
 #### Instance storage (`env.storage().instance()`)
 
@@ -46,6 +48,10 @@ File: `contract/arena/src/lib.rs`
 | `ADMIN` | `Address` | Contract admin; set once via `initialize` |
 | `P_HASH` | `BytesN<32>` | WASM hash pending upgrade via 48-hour timelock |
 | `P_AFTER` | `u64` | Earliest timestamp at which `execute_upgrade` may be called |
+| `TOKEN` | `Address` | SAC token contract used for stake deposits and prize payouts; set via `set_token` |
+| `S_COUNT` | `u32` | Running count of survivors registered via `join`; incremented on each successful join |
+| `PRIZE` | `i128` | Accumulated prize pool; incremented by each player's stake on `join`, zeroed on `claim` |
+| `G_FIN` | `bool` | Permanently `true` after a successful `claim`; blocks any further claim attempts |
 
 ### Factory Contract
 
@@ -76,6 +82,10 @@ No custom Soroban storage keys are currently defined or used.
 | `get_config` | `Config` | — | — |
 | `get_round` | `Round` | — | — |
 | `get_choice` | `Submission(n, player)` | — | — |
+| `join` | `TOKEN`, `S_COUNT`, `PRIZE` (instance), `Survivor(player)` | `Survivor(player)`, `S_COUNT`, `PRIZE` (instance) | `Survivor(player)` |
+| `set_token` | `ADMIN` (instance) | `TOKEN` (instance) | — |
+| `survivor_count` | `S_COUNT` (instance) | — | — |
+| `claim` | `G_FIN`, `S_COUNT`, `Survivor(winner)`, `PrizeClaimed(winner)`, `PRIZE`, `TOKEN` | `PrizeClaimed(winner)`, `PRIZE`, `G_FIN` (instance) | `PrizeClaimed(winner)` |
 | `initialize` | `ADMIN` (instance) | `ADMIN` (instance) | — |
 | `propose_upgrade` ¹ | `ADMIN` (instance) | `P_HASH`, `P_AFTER` (instance) | — |
 | `execute_upgrade` ¹ | `ADMIN`, `P_AFTER`, `P_HASH` (instance) | removes `P_HASH`, `P_AFTER` (instance) | — |
