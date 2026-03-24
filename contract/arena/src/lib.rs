@@ -1,7 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    Address, BytesN, Env, Symbol, contract, contracterror, contractimpl, contracttype, symbol_short,
+    Address, BytesN, Env, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
+    symbol_short,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -30,6 +31,7 @@ const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
 const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
 const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
+const TOPIC_ROUND_RESOLVED: Symbol = symbol_short!("ROUND_OK");
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -50,6 +52,7 @@ pub enum ArenaError {
     NoPrizeToClaim = 11,
     AlreadyClaimed = 12,
     ReentrancyGuard = 13,
+    PlayerEliminated = 14,
 }
 
 #[contracttype]
@@ -77,11 +80,31 @@ pub struct RoundState {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UserState {
+    pub active: bool,
+    pub won: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoundResolution {
+    pub round_number: u32,
+    pub winning_choice: Choice,
+    pub survivors: u32,
+    pub eliminated: u32,
+    pub tied: bool,
+}
+
+#[contracttype]
 #[derive(Clone)]
 enum DataKey {
     Config,
     Round,
     Submission(u32, Address),
+    RoundPlayers(u32),
+    ActivePlayers,
+    User(Address),
     PrizeClaimed(Address),
 }
 
@@ -304,13 +327,35 @@ impl ArenaContract {
             return Err(ArenaError::SubmissionWindowClosed);
         }
 
-        let submission_key = DataKey::Submission(round.round_number, player);
+        let submission_key = DataKey::Submission(round.round_number, player.clone());
         if storage(&env).has(&submission_key) {
             return Err(ArenaError::SubmissionAlreadyExists);
         }
 
-        storage(&env).set(&submission_key, &choice);
+        if !player_can_submit(&env, &player) {
+            return Err(ArenaError::PlayerEliminated);
+        }
+
+        storage(&env).set(&submission_key, &choice.clone());
         bump(&env, &submission_key);
+
+        let players_key = DataKey::RoundPlayers(round.round_number);
+        let mut players: Vec<Address> = storage(&env)
+            .get(&players_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        players.push_back(player.clone());
+        storage(&env).set(&players_key, &players);
+        bump(&env, &players_key);
+
+        let user_key = DataKey::User(player);
+        storage(&env).set(
+            &user_key,
+            &UserState {
+                active: true,
+                won: false,
+            },
+        );
+        bump(&env, &user_key);
 
         round.total_submissions += 1;
         storage(&env).set(&DataKey::Round, &round);
@@ -355,6 +400,101 @@ impl ArenaContract {
         Ok(round)
     }
 
+    pub fn resolve_round(env: Env) -> Result<RoundResolution, ArenaError> {
+        require_not_paused(&env)?;
+        env.storage()
+            .instance()
+            .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
+
+        let mut round = get_round(&env)?;
+        if !round.active {
+            return Err(ArenaError::NoActiveRound);
+        }
+
+        let current_ledger = env.ledger().sequence();
+        if current_ledger <= round.round_deadline_ledger {
+            return Err(ArenaError::RoundStillOpen);
+        }
+
+        let players_key = DataKey::RoundPlayers(round.round_number);
+        let players: Vec<Address> = storage(&env)
+            .get(&players_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut heads_count = 0u32;
+        let mut tails_count = 0u32;
+        for player in players.iter() {
+            match storage(&env).get::<_, Choice>(&DataKey::Submission(round.round_number, player)) {
+                Some(Choice::Heads) => heads_count += 1,
+                Some(Choice::Tails) => tails_count += 1,
+                None => {}
+            }
+        }
+
+        let tied = heads_count == tails_count;
+        let winning_choice = determine_winning_choice(&env, heads_count, tails_count);
+        let mut survivors = Vec::new(&env);
+        let mut eliminated = 0u32;
+
+        for player in players.iter() {
+            let survives = storage(&env)
+                .get::<_, Choice>(&DataKey::Submission(round.round_number, player.clone()))
+                == Some(winning_choice.clone());
+
+            if survives {
+                survivors.push_back(player.clone());
+            } else {
+                eliminated += 1;
+            }
+
+            let user_key = DataKey::User(player.clone());
+            storage(&env).set(
+                &user_key,
+                &UserState {
+                    active: survives,
+                    won: false,
+                },
+            );
+            bump(&env, &user_key);
+        }
+
+        if survivors.len() == 1 {
+            let sole_survivor = survivors.get(0).unwrap();
+            let user_key = DataKey::User(sole_survivor.clone());
+            storage(&env).set(
+                &user_key,
+                &UserState {
+                    active: true,
+                    won: true,
+                },
+            );
+            bump(&env, &user_key);
+        }
+
+        storage(&env).set(&DataKey::ActivePlayers, &survivors);
+        bump(&env, &DataKey::ActivePlayers);
+
+        round.active = false;
+        round.timed_out = false;
+        storage(&env).set(&DataKey::Round, &round);
+        bump(&env, &DataKey::Round);
+
+        let resolution = RoundResolution {
+            round_number: round.round_number,
+            winning_choice: winning_choice.clone(),
+            survivors: survivors.len(),
+            eliminated,
+            tied,
+        };
+
+        env.events().publish(
+            (TOPIC_ROUND_RESOLVED, round.round_number, winning_choice),
+            (resolution.survivors, resolution.eliminated, resolution.tied),
+        );
+
+        Ok(resolution)
+    }
+
     /// Return the current [`ArenaConfig`].
     ///
     /// # Arguments
@@ -394,6 +534,15 @@ impl ArenaContract {
     /// None — read-only, open to any caller.
     pub fn get_choice(env: Env, round_number: u32, player: Address) -> Option<Choice> {
         storage(&env).get(&DataKey::Submission(round_number, player))
+    }
+
+    pub fn get_user_state(env: Env, player: Address) -> UserState {
+        storage(&env)
+            .get(&DataKey::User(player))
+            .unwrap_or(UserState {
+                active: false,
+                won: false,
+            })
     }
 
     pub fn claim(env: Env, winner: Address) -> Result<i128, ArenaError> {
@@ -598,6 +747,26 @@ fn bump(env: &Env, key: &DataKey) {
     env.storage()
         .persistent()
         .extend_ttl(key, GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
+}
+
+fn player_can_submit(env: &Env, player: &Address) -> bool {
+    let active_players: Option<Vec<Address>> = storage(env).get(&DataKey::ActivePlayers);
+    match active_players {
+        Some(players) if !players.is_empty() => players.contains(player.clone()),
+        _ => true,
+    }
+}
+
+fn determine_winning_choice(env: &Env, heads_count: u32, tails_count: u32) -> Choice {
+    if heads_count < tails_count {
+        Choice::Heads
+    } else if tails_count < heads_count {
+        Choice::Tails
+    } else if env.ledger().sequence() % 2 == 0 {
+        Choice::Heads
+    } else {
+        Choice::Tails
+    }
 }
 
 #[cfg(test)]

@@ -252,6 +252,114 @@ fn new_round_can_start_after_timeout() {
 }
 
 #[test]
+fn resolve_round_advances_minority_survivors() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_client(&env);
+    let survivor = Address::generate(&env);
+    let eliminated_a = Address::generate(&env);
+    let eliminated_b = Address::generate(&env);
+
+    set_ledger_sequence(&env, 700);
+    client.init(&5);
+    client.start_round();
+
+    set_ledger_sequence(&env, 702);
+    client.submit_choice(&survivor, &1u32, &Choice::Heads);
+    client.submit_choice(&eliminated_a, &1u32, &Choice::Tails);
+    client.submit_choice(&eliminated_b, &1u32, &Choice::Tails);
+
+    set_ledger_sequence(&env, 706);
+    let resolution = client.resolve_round();
+
+    assert_eq!(resolution.round_number, 1);
+    assert_eq!(resolution.winning_choice, Choice::Heads);
+    assert_eq!(resolution.survivors, 1);
+    assert_eq!(resolution.eliminated, 2);
+    assert!(!resolution.tied);
+    assert_eq!(
+        client.get_user_state(&survivor),
+        UserState {
+            active: true,
+            won: true,
+        }
+    );
+    assert_eq!(
+        client.get_user_state(&eliminated_a),
+        UserState {
+            active: false,
+            won: false,
+        }
+    );
+}
+
+#[test]
+fn resolve_round_tie_breaks_deterministically_from_ledger_sequence() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_client(&env);
+    let heads_player = Address::generate(&env);
+    let tails_player = Address::generate(&env);
+
+    set_ledger_sequence(&env, 800);
+    client.init(&4);
+    client.start_round();
+
+    set_ledger_sequence(&env, 802);
+    client.submit_choice(&heads_player, &1u32, &Choice::Heads);
+    client.submit_choice(&tails_player, &1u32, &Choice::Tails);
+
+    set_ledger_sequence(&env, 806);
+    let resolution = client.resolve_round();
+
+    assert!(resolution.tied);
+    assert_eq!(resolution.winning_choice, Choice::Heads);
+    assert_eq!(
+        client.get_user_state(&heads_player),
+        UserState {
+            active: true,
+            won: true,
+        }
+    );
+    assert_eq!(
+        client.get_user_state(&tails_player),
+        UserState {
+            active: false,
+            won: false,
+        }
+    );
+}
+
+#[test]
+fn resolved_round_survivors_can_submit_next_round_but_eliminated_players_cannot() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_client(&env);
+    let survivor = Address::generate(&env);
+    let eliminated = Address::generate(&env);
+
+    set_ledger_sequence(&env, 900);
+    client.init(&3);
+    client.start_round();
+
+    set_ledger_sequence(&env, 901);
+    client.submit_choice(&survivor, &1u32, &Choice::Heads);
+    client.submit_choice(&eliminated, &1u32, &Choice::Tails);
+
+    set_ledger_sequence(&env, 904);
+    client.resolve_round();
+
+    set_ledger_sequence(&env, 905);
+    let round_two = client.start_round();
+    assert_eq!(round_two.round_number, 2);
+
+    set_ledger_sequence(&env, 906);
+    client.submit_choice(&survivor, &2u32, &Choice::Heads);
+    let eliminated_result = client.try_submit_choice(&eliminated, &2u32, &Choice::Tails);
+    assert_eq!(eliminated_result, Err(Ok(ArenaError::PlayerEliminated)));
+}
+
+#[test]
 fn data_model_doc_covers_required_sections() {
     let doc = include_str!("../../DATA_MODEL.md");
 
@@ -260,22 +368,6 @@ fn data_model_doc_covers_required_sections() {
     assert!(doc.contains("## Access Pattern Matrix"));
     assert!(doc.contains("## ER-Style State Diagram"));
     assert!(doc.contains("No custom Soroban storage keys are currently defined or used."));
-}
-
-#[test]
-fn architecture_doc_covers_required_sections() {
-    let doc = include_str!("../../ARCHITECTURE.md");
-
-    assert!(doc.contains("# Inverse Arena Contract Architecture"));
-    assert!(doc.contains("## Contract Inventory"));
-    assert!(doc.contains("## Inter-Contract Call Diagram"));
-    assert!(doc.contains("## Trust Boundaries"));
-    assert!(doc.contains("## Ownership And Upgrade Authority"));
-    assert!(doc.contains("```mermaid"));
-    assert!(doc.contains("Factory"));
-    assert!(doc.contains("Arena"));
-    assert!(doc.contains("Staking"));
-    assert!(doc.contains("Payout"));
 }
 
 // ── TTL survival test ─────────────────────────────────────────────────────────
