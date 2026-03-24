@@ -304,3 +304,320 @@ fn test_pending_upgrade_none_after_cancel() {
     client.cancel_upgrade();
     assert!(client.pending_upgrade().is_none());
 }
+
+// ── Issue #232: round timeout and stalled game recovery ──────────────────────
+
+// AC: Timeout callable after deadline passes
+#[test]
+fn timeout_round_succeeds_one_ledger_after_deadline() {
+    let env = Env::default();
+    let client = create_client(&env);
+
+    set_ledger_sequence(&env, 1000);
+    client.init(&10);
+    client.start_round();
+
+    // deadline = 1010; advance one past it
+    set_ledger_sequence(&env, 1011);
+    let result = client.timeout_round();
+
+    assert!(!result.active, "round must be inactive after timeout");
+    assert!(result.timed_out, "timed_out flag must be set");
+    assert_eq!(result.round_number, 1);
+}
+
+// AC: Timeout callable after deadline passes (exact boundary)
+#[test]
+fn timeout_round_succeeds_just_after_deadline() {
+    let env = Env::default();
+    let client = create_client(&env);
+
+    set_ledger_sequence(&env, 500);
+    client.init(&5);
+    client.start_round(); // deadline = 505
+
+    set_ledger_sequence(&env, 506);
+    let result = client.timeout_round();
+
+    assert!(!result.active);
+    assert!(result.timed_out);
+}
+
+// AC: timeout_round fails before deadline (round still open)
+#[test]
+fn timeout_round_fails_at_deadline_ledger() {
+    let env = Env::default();
+    let client = create_client(&env);
+
+    set_ledger_sequence(&env, 200);
+    client.init(&4);
+    client.start_round(); // deadline = 204
+
+    set_ledger_sequence(&env, 204); // exactly at deadline — still open
+    let result = client.try_timeout_round();
+
+    assert_eq!(result, Err(Ok(ArenaError::RoundStillOpen)));
+}
+
+#[test]
+fn timeout_round_fails_before_deadline() {
+    let env = Env::default();
+    let client = create_client(&env);
+
+    set_ledger_sequence(&env, 100);
+    client.init(&20);
+    client.start_round(); // deadline = 120
+
+    set_ledger_sequence(&env, 115);
+    let result = client.try_timeout_round();
+
+    assert_eq!(result, Err(Ok(ArenaError::RoundStillOpen)));
+}
+
+// AC: timeout_round fails when no active round
+#[test]
+fn timeout_round_fails_when_no_active_round() {
+    let env = Env::default();
+    let client = create_client(&env);
+
+    set_ledger_sequence(&env, 50);
+    client.init(&3);
+    // do NOT call start_round
+
+    set_ledger_sequence(&env, 200);
+    let result = client.try_timeout_round();
+
+    assert_eq!(result, Err(Ok(ArenaError::NoActiveRound)));
+}
+
+// AC: Game resolves correctly after timeout — state is consistent
+#[test]
+fn round_state_is_consistent_after_timeout() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_client(&env);
+
+    let player = Address::generate(&env);
+
+    set_ledger_sequence(&env, 300);
+    client.init(&5); // deadline = 305
+    client.start_round();
+
+    // player submits within window
+    set_ledger_sequence(&env, 302);
+    env.mock_all_auths();
+    client.submit_choice(&player, &Choice::Heads);
+
+    // advance past deadline and call timeout
+    set_ledger_sequence(&env, 306);
+    let timed_out = client.timeout_round();
+
+    // round must reflect the one submission that occurred
+    assert_eq!(timed_out.total_submissions, 1);
+    assert!(!timed_out.active);
+    assert!(timed_out.timed_out);
+
+    // persisted state must match returned state
+    let stored = client.get_round();
+    assert_eq!(stored, timed_out);
+}
+
+// AC: Funds remain accessible after timeout — choices/data still readable
+#[test]
+fn player_choice_accessible_after_timeout() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_client(&env);
+
+    let player = Address::generate(&env);
+
+    set_ledger_sequence(&env, 400);
+    client.init(&3);
+    client.start_round(); // deadline = 403
+
+    set_ledger_sequence(&env, 401);
+    env.mock_all_auths();
+    client.submit_choice(&player, &Choice::Tails);
+
+    set_ledger_sequence(&env, 404);
+    client.timeout_round();
+
+    // choice data must still be accessible for settlement / fund release
+    let choice = client.get_choice(&1, &player);
+    assert_eq!(choice, Some(Choice::Tails));
+}
+
+// AC: All-absent scenario — no submissions, game still resolves via timeout
+#[test]
+fn timeout_works_when_no_player_submitted() {
+    let env = Env::default();
+    let client = create_client(&env);
+
+    set_ledger_sequence(&env, 600);
+    client.init(&5);
+    let round = client.start_round(); // deadline = 605
+    assert_eq!(round.total_submissions, 0);
+
+    set_ledger_sequence(&env, 610);
+    let timed_out = client.timeout_round();
+
+    assert_eq!(timed_out.total_submissions, 0, "no submissions expected");
+    assert!(!timed_out.active);
+    assert!(timed_out.timed_out);
+}
+
+// AC: All-absent scenario — multiple players, none submit, timeout resolves
+#[test]
+fn timeout_with_multiple_absent_players_resolves_gracefully() {
+    let env = Env::default();
+    let client = create_client(&env);
+
+    set_ledger_sequence(&env, 700);
+    client.init(&8); // deadline = 708
+    client.start_round();
+
+    // generate some player addresses but have none submit
+    let _p1 = Address::generate(&env);
+    let _p2 = Address::generate(&env);
+    let _p3 = Address::generate(&env);
+
+    set_ledger_sequence(&env, 709);
+    let timed_out = client.timeout_round();
+
+    assert_eq!(timed_out.total_submissions, 0);
+    assert!(!timed_out.active);
+    assert!(timed_out.timed_out);
+
+    // all player choices are absent (None) — accessible without panic
+    assert_eq!(client.get_choice(&1, &_p1), None);
+    assert_eq!(client.get_choice(&1, &_p2), None);
+    assert_eq!(client.get_choice(&1, &_p3), None);
+}
+
+// AC: Submissions after timeout are rejected
+#[test]
+fn submit_choice_rejected_after_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_client(&env);
+
+    let player = Address::generate(&env);
+
+    set_ledger_sequence(&env, 800);
+    client.init(&5); // deadline = 805
+    client.start_round();
+
+    set_ledger_sequence(&env, 806);
+    let result = client.try_submit_choice(&player, &Choice::Heads);
+
+    assert_eq!(result, Err(Ok(ArenaError::SubmissionWindowClosed)));
+}
+
+// AC: New round starts cleanly after a timed-out round
+#[test]
+fn new_round_starts_after_timeout_with_fresh_state() {
+    let env = Env::default();
+    let client = create_client(&env);
+
+    set_ledger_sequence(&env, 900);
+    client.init(&5); // deadline = 905
+    client.start_round();
+
+    set_ledger_sequence(&env, 906);
+    client.timeout_round();
+
+    set_ledger_sequence(&env, 910);
+    let round2 = client.start_round();
+
+    assert_eq!(round2.round_number, 2);
+    assert_eq!(round2.round_start_ledger, 910);
+    assert_eq!(round2.round_deadline_ledger, 915);
+    assert!(round2.active);
+    assert!(!round2.timed_out);
+    assert_eq!(round2.total_submissions, 0);
+}
+
+// AC: Starting a round while one is already active fails
+#[test]
+fn start_round_fails_when_active_round_exists() {
+    let env = Env::default();
+    let client = create_client(&env);
+
+    set_ledger_sequence(&env, 1000);
+    client.init(&10);
+    client.start_round();
+
+    set_ledger_sequence(&env, 1005);
+    let result = client.try_start_round();
+
+    assert_eq!(result, Err(Ok(ArenaError::RoundAlreadyActive)));
+}
+
+// AC: timeout_round cannot be called twice on the same round
+#[test]
+fn timeout_round_fails_on_already_timed_out_round() {
+    let env = Env::default();
+    let client = create_client(&env);
+
+    set_ledger_sequence(&env, 1100);
+    client.init(&3); // deadline = 1103
+    client.start_round();
+
+    set_ledger_sequence(&env, 1104);
+    client.timeout_round(); // first call — succeeds
+
+    let result = client.try_timeout_round(); // second call — no active round
+    assert_eq!(result, Err(Ok(ArenaError::NoActiveRound)));
+}
+
+// AC: round number increments correctly across multiple timeout cycles
+#[test]
+fn round_number_increments_across_timeout_cycles() {
+    let env = Env::default();
+    let client = create_client(&env);
+
+    set_ledger_sequence(&env, 0);
+    client.init(&2);
+
+    for expected_round in 1u32..=5 {
+        let start_seq = (expected_round - 1) * 10;
+        set_ledger_sequence(&env, start_seq);
+        let round = client.start_round();
+        assert_eq!(round.round_number, expected_round);
+
+        set_ledger_sequence(&env, start_seq + 3); // past deadline (start + 2)
+        let timed = client.timeout_round();
+        assert_eq!(timed.round_number, expected_round);
+        assert!(timed.timed_out);
+    }
+}
+
+// AC: partial submissions followed by timeout — present choices preserved
+#[test]
+fn partial_submissions_preserved_after_timeout() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_client(&env);
+
+    let player_a = Address::generate(&env);
+    let player_b = Address::generate(&env);
+    let player_c = Address::generate(&env);
+
+    set_ledger_sequence(&env, 2000);
+    client.init(&10); // deadline = 2010
+    client.start_round();
+
+    // only player_a and player_b submit
+    set_ledger_sequence(&env, 2005);
+    env.mock_all_auths();
+    client.submit_choice(&player_a, &Choice::Heads);
+    client.submit_choice(&player_b, &Choice::Tails);
+
+    set_ledger_sequence(&env, 2011);
+    let timed_out = client.timeout_round();
+
+    assert_eq!(timed_out.total_submissions, 2);
+    assert_eq!(client.get_choice(&1, &player_a), Some(Choice::Heads));
+    assert_eq!(client.get_choice(&1, &player_b), Some(Choice::Tails));
+    assert_eq!(client.get_choice(&1, &player_c), None); // absent
+}
