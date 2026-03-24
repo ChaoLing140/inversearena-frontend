@@ -7,6 +7,7 @@ use soroban_sdk::{
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
 const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
+const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
 const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
 const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
 
@@ -25,6 +26,8 @@ const GAME_TTL_EXTEND_TO: u32 = 535_680; // ~31 days
 const TOPIC_UPGRADE_PROPOSED: Symbol = symbol_short!("UP_PROP");
 const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
 const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
+const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
+const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -41,6 +44,7 @@ pub enum ArenaError {
     RoundStillOpen = 7,
     RoundDeadlineOverflow = 8,
     NotInitialized = 9,
+    Paused = 10,
 }
 
 #[contracttype]
@@ -140,9 +144,34 @@ impl ArenaContract {
             .expect("not initialized")
     }
 
+    /// Pause the contract. Admin-only.
+    pub fn pause(env: Env) {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        env.storage().instance().set(&PAUSED_KEY, &true);
+        env.events().publish((TOPIC_PAUSED,), ());
+    }
+
+    /// Unpause the contract. Admin-only.
+    pub fn unpause(env: Env) {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        env.storage().instance().set(&PAUSED_KEY, &false);
+        env.events().publish((TOPIC_UNPAUSED,), ());
+    }
+
+    /// Return whether the contract is paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&PAUSED_KEY)
+            .unwrap_or(false)
+    }
+
     // ── Round state machine ──────────────────────────────────────────────────
 
     pub fn start_round(env: Env) -> Result<RoundState, ArenaError> {
+        require_not_paused(&env)?;
         env.storage()
             .instance()
             .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
@@ -175,6 +204,7 @@ impl ArenaContract {
     }
 
     pub fn submit_choice(env: Env, player: Address, choice: Choice) -> Result<(), ArenaError> {
+        require_not_paused(&env)?;
         env.storage()
             .instance()
             .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
@@ -206,6 +236,7 @@ impl ArenaContract {
     }
 
     pub fn timeout_round(env: Env) -> Result<RoundState, ArenaError> {
+        require_not_paused(&env)?;
         env.storage()
             .instance()
             .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
@@ -246,6 +277,7 @@ impl ArenaContract {
     /// earliest timestamp at which `execute_upgrade` may be called (now + 48 h).
     /// Emits `UpgradeProposed(new_wasm_hash, execute_after)`.
     pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        require_not_paused(&env).unwrap();
         let admin: Address = env
             .storage()
             .instance()
@@ -271,7 +303,9 @@ impl ArenaContract {
     /// Panics if there is no pending proposal or the timelock has not elapsed.
     /// Emits `UpgradeExecuted(new_wasm_hash)`.
     pub fn execute_upgrade(env: Env) {
+        require_not_paused(&env).unwrap();
         let admin: Address = env
+        
             .storage()
             .instance()
             .get(&ADMIN_KEY)
@@ -309,6 +343,7 @@ impl ArenaContract {
     /// Panics if there is no pending proposal.
     /// Emits `UpgradeCancelled`.
     pub fn cancel_upgrade(env: Env) {
+        require_not_paused(&env).unwrap();
         let admin: Address = env
             .storage()
             .instance()
@@ -354,6 +389,13 @@ fn get_round(env: &Env) -> Result<RoundState, ArenaError> {
 
 fn storage(env: &Env) -> soroban_sdk::storage::Persistent {
     env.storage().persistent()
+}
+
+fn require_not_paused(env: &Env) -> Result<(), ArenaError> {
+    if env.storage().instance().get(&PAUSED_KEY).unwrap_or(false) {
+        return Err(ArenaError::Paused);
+    }
+    Ok(())
 }
 
 fn bump(env: &Env, key: &DataKey) {
