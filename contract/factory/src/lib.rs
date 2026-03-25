@@ -268,7 +268,7 @@ impl FactoryContract {
 
         let metadata = ArenaMetadata {
             pool_id,
-            creator,
+            creator: creator.clone(),
             capacity,
             stake_amount,
         };

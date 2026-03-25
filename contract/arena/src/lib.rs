@@ -13,6 +13,8 @@ const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
 const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
 const SURVIVOR_COUNT_KEY: Symbol = symbol_short!("S_COUNT");
 const CAPACITY_KEY: Symbol = symbol_short!("CAPACITY");
+const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
+const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE_P");
 // ── Timelock constant: 48 hours in seconds ────────────────────────────────────
 
 const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
@@ -182,7 +184,7 @@ impl ArenaContract {
             .get(&ADMIN_KEY)
             .expect("not initialized");
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Token, &token);
+        env.storage().instance().set(&TOKEN_KEY, &token);
     }
 
     pub fn set_winner(env: Env, player: Address, stake: i128, yield_comp: i128) {
@@ -214,7 +216,7 @@ impl ArenaContract {
                 let token: Address = env
                     .storage()
                     .instance()
-                    .get(&DataKey::Token)
+                    .get(&TOKEN_KEY)
                     .expect("token not set");
                 let token_client = token::Client::new(&env, &token);
 
@@ -371,7 +373,7 @@ impl ArenaContract {
             .ok_or(ArenaError::TokenNotSet)?;
 
         // Pull stake from player into this contract.
-        TokenClient::new(&env, &token).transfer(&player, &env.current_contract_address(), &amount);
+        token::Client::new(&env, &token).transfer(&player, &env.current_contract_address(), &amount);
 
         // Register survivor.
         storage(&env).set(&survivor_key, &());
