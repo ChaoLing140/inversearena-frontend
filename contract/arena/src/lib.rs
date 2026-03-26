@@ -1,10 +1,11 @@
 #![no_std]
 
 mod bounds;
+mod invariants;
 
 use soroban_sdk::{
-    Address, BytesN, Env, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
-    symbol_short, token,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token,
+    Address, BytesN, Env, Symbol,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -18,9 +19,6 @@ const CAPACITY_KEY: Symbol = symbol_short!("CAPACITY");
 const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
 const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE_P");
 const GAME_STATUS_KEY: Symbol = symbol_short!("G_STATUS");
-const SCHEMA_VERSION_KEY: Symbol = symbol_short!("S_VER");
-
-const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 // ── Timelock: 48 hours in seconds ─────────────────────────────────────────────
 const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
@@ -239,6 +237,16 @@ impl ArenaContract {
         env.storage().instance().set(&TOKEN_KEY, &token);
     }
 
+    pub fn set_capacity(env: Env, capacity: u32) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .expect("not initialized");
+        admin.require_auth();
+        env.storage().instance().set(&CAPACITY_KEY, &capacity);
+    }
+
     pub fn set_winner(
         env: Env,
         player: Address,
@@ -448,9 +456,10 @@ impl ArenaContract {
     pub fn get_arena_state(env: Env) -> Result<ArenaStateView, ArenaError> {
         let round = get_round(&env)?;
         let prize_pool: i128 = env.storage().instance().get(&PRIZE_POOL_KEY).unwrap_or(0);
+        let max_capacity: u32 = env.storage().instance().get(&CAPACITY_KEY).unwrap_or(0);
         Ok(ArenaStateView {
             survivors_count: round.total_submissions,
-            max_capacity: 0,
+            max_capacity,
             round_number: round.round_number,
             current_stake: prize_pool,
             potential_payout: prize_pool,
