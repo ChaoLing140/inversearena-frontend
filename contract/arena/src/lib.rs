@@ -476,9 +476,6 @@ impl ArenaContract {
             return Err(ArenaError::MaxSubmissionsPerRound);
         }
 
-        if !player_can_submit(&env, &player) {
-            return Err(ArenaError::PlayerEliminated);
-        }
         storage(&env).set(&submission_key, &choice);
         bump(&env, &submission_key);
 
@@ -568,7 +565,15 @@ impl ArenaContract {
 
     /// Return contract-level arena state for UI reads.
     pub fn get_arena_state(env: Env) -> Result<ArenaStateView, ArenaError> {
-        let round = get_round(&env)?;
+        let round = storage(&env).get(&DataKey::Round).unwrap_or(RoundState {
+            round_number: 0,
+            round_start_ledger: 0,
+            round_deadline_ledger: 0,
+            active: false,
+            total_submissions: 0,
+            timed_out: false,
+            finished: false,
+        });
         let prize_pool: i128 = env.storage().instance().get(&PRIZE_POOL_KEY).unwrap_or(0);
         let survivors_count: u32 = env
             .storage()
@@ -596,6 +601,7 @@ impl ArenaContract {
 
     /// Return combined arena + user state in one read for RPC efficiency.
     pub fn get_full_state(env: Env, player: Address) -> Result<FullStateView, ArenaError> {
+        let _ = get_config(&env)?;
         let arena_state = Self::get_arena_state(env.clone())?;
         let user_state = Self::get_user_state(env, player);
 
@@ -849,10 +855,6 @@ fn require_not_paused(env: &Env) -> Result<(), ArenaError> {
         return Err(ArenaError::Paused);
     }
     Ok(())
-}
-
-fn player_can_submit(env: &Env, player: &Address) -> bool {
-    storage(env).has(&DataKey::Survivor(player.clone()))
 }
 
 fn bump(env: &Env, key: &DataKey) {

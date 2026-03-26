@@ -316,11 +316,16 @@ fn get_full_state_returns_combined_arena_and_user_state() {
     env.mock_all_auths();
     let client = create_client(&env);
     let player = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let (token_asset, token_id) = setup_token(&env, &admin);
 
     set_ledger_sequence(&env, 800);
     client.init(&5);
-
+    client.initialize(&admin);
+    client.set_token(&token_id);
+    token_asset.mint(&player, &100i128);
     client.join(&player, &10i128);
+
     client.start_round();
     client.submit_choice(&player, &1u32, &Choice::Heads);
 
