@@ -655,6 +655,27 @@ fn test_migrate_noop_when_current() {
     assert_eq!(client.schema_version(), 1);
 }
 
+// ── get_arenas pagination bounds ──────────────────────────────────────────────
+
+#[test]
+fn get_arenas_clamps_limit_above_max() {
+    let (_env, _admin, client) = setup();
+    // Even with limit = u32::MAX, the result must be at most MAX_PAGE_SIZE entries.
+    let results = client.get_arenas(&0u32, &u32::MAX);
+    assert!(
+        results.len() <= 50,
+        "get_arenas must not return more than MAX_PAGE_SIZE entries"
+    );
+}
+
+#[test]
+fn get_arenas_large_offset_does_not_overflow() {
+    let (_env, _admin, client) = setup();
+    // offset near u32::MAX combined with a non-zero limit must not panic or overflow.
+    let results = client.get_arenas(&(u32::MAX - 10), &50u32);
+    assert_eq!(results.len(), 0, "no pools exist, result must be empty");
+}
+
 /// migrate upgrades version 0 to current.
 #[test]
 fn test_migrate_from_v0() {

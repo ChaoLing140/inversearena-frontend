@@ -34,6 +34,7 @@ pub struct ArenaMetadata {
 // ── Capacity limits ───────────────────────────────────────────────────────────
 
 const MAX_POOL_CAPACITY: u32 = 256;
+const MAX_PAGE_SIZE: u32 = 50;
 
 #[contracttype]
 #[derive(Clone)]
@@ -567,6 +568,7 @@ impl FactoryContract {
     }
 
     /// Get a paginated list of arena metadata.
+    /// `limit` is clamped to `MAX_PAGE_SIZE` (50) to prevent unbounded storage reads.
     pub fn get_arenas(env: Env, offset: u32, limit: u32) -> soroban_sdk::Vec<ArenaMetadata> {
         let pool_count: u32 = env
             .storage()
@@ -574,8 +576,9 @@ impl FactoryContract {
             .get(&POOL_COUNT_KEY)
             .unwrap_or(0u32);
 
+        let clamped_limit = limit.min(MAX_PAGE_SIZE);
         let mut results = soroban_sdk::Vec::new(&env);
-        let end = core::cmp::min(offset + limit, pool_count);
+        let end = core::cmp::min(offset.saturating_add(clamped_limit), pool_count);
 
         for i in offset..end {
             if let Some(meta) = Self::get_arena(env.clone(), i) {
