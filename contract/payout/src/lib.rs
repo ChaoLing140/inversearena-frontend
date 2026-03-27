@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Env, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
+    Address, Env, Symbol, Vec,
 };
 
 const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
@@ -13,7 +13,10 @@ const TOPIC_DUST_COLLECTED: Symbol = symbol_short!("DUST");
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
-    Payout(u32, Address),
+    /// Composite idempotency key: (context, pool_id, round_id, winner).
+    Payout(Symbol, u32, u32, Address),
+    /// Maps a currency symbol (e.g. "XLM") to its token contract address.
+    CurrencyToken(Symbol),
 }
 
 #[contracttype]
@@ -42,13 +45,7 @@ pub struct PayoutContract;
 #[contractimpl]
 impl PayoutContract {
     /// Placeholder function — returns a fixed value for contract liveness checks.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    ///
-    /// # Authorization
-    /// None — open to any caller.
-        pub fn hello(_env: Env) -> u32 {
+    pub fn hello(_env: Env) -> u32 {
         789
     }
 
@@ -79,10 +76,35 @@ impl PayoutContract {
             .ok_or(PayoutError::TreasuryNotSet)
     }
 
+    /// Register a token contract address for a currency symbol.
+    /// Admin-only. Used so `distribute_winnings` can transfer tokens on-chain.
+    pub fn set_currency_token(env: Env, symbol: Symbol, token_address: Address) {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::CurrencyToken(symbol), &token_address);
+    }
+
+    /// Distribute a payout to a single winner.
+    ///
+    /// The composite key `(ctx, pool_id, round_id, winner)` ensures idempotency:
+    /// the same combination can only be paid once.
+    ///
+    /// If the currency symbol has a registered token address (via
+    /// `set_currency_token`), the contract transfers `amount` tokens directly
+    /// to the winner. Otherwise, the payout is recorded on-chain only.
+    ///
+    /// # Errors
+    /// * `UnauthorizedCaller` — `caller` is not the admin.
+    /// * `InvalidAmount`      — `amount` is zero or negative.
+    /// * `AlreadyPaid`        — the composite key was already processed.
     pub fn distribute_winnings(
         env: Env,
         caller: Address,
-        idempotency_key: u32,
+        ctx: Symbol,
+        pool_id: u32,
+        round_id: u32,
         winner: Address,
         amount: i128,
         currency: Symbol,
@@ -103,7 +125,7 @@ impl PayoutContract {
             panic_with_error!(&env, PayoutError::InvalidAmount);
         }
 
-        let payout_key = DataKey::Payout(idempotency_key, winner.clone());
+        let payout_key = DataKey::Payout(ctx.clone(), pool_id, round_id, winner.clone());
         if env
             .storage()
             .instance()
@@ -121,14 +143,34 @@ impl PayoutContract {
         };
         env.storage().instance().set(&payout_key, &payout_data);
 
+        // Transfer tokens to winner if a token address is registered for this currency.
+        if let Some(token_address) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::CurrencyToken(currency.clone()))
+        {
+            token::Client::new(&env, &token_address).transfer(
+                &env.current_contract_address(),
+                &winner,
+                &amount,
+            );
+        }
+
         env.events()
             .publish((TOPIC_PAYOUT_EXECUTED,), (winner, amount, currency));
 
         Ok(())
     }
 
-    pub fn is_payout_processed(env: Env, idempotency_key: u32, winner: Address) -> bool {
-        let payout_key = DataKey::Payout(idempotency_key, winner);
+    /// Returns whether a payout for the composite key has already been processed.
+    pub fn is_payout_processed(
+        env: Env,
+        ctx: Symbol,
+        pool_id: u32,
+        round_id: u32,
+        winner: Address,
+    ) -> bool {
+        let payout_key = DataKey::Payout(ctx, pool_id, round_id, winner);
         env.storage()
             .instance()
             .get::<_, PayoutData>(&payout_key)
@@ -136,8 +178,15 @@ impl PayoutContract {
             .unwrap_or(false)
     }
 
-    pub fn get_payout(env: Env, idempotency_key: u32, winner: Address) -> Option<PayoutData> {
-        let payout_key = DataKey::Payout(idempotency_key, winner);
+    /// Returns the stored `PayoutData` for the composite key, or `None` if not processed.
+    pub fn get_payout(
+        env: Env,
+        ctx: Symbol,
+        pool_id: u32,
+        round_id: u32,
+        winner: Address,
+    ) -> Option<PayoutData> {
+        let payout_key = DataKey::Payout(ctx, pool_id, round_id, winner);
         env.storage().instance().get(&payout_key)
     }
 
