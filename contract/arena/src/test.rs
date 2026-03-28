@@ -6,7 +6,7 @@ use std::vec::Vec;
 use super::*;
 use proptest::prelude::*;
 use soroban_sdk::{
-    Address, Bytes, BytesN, Env,
+    Address, Bytes, BytesN, Env, IntoVal,
     testutils::{Address as _, Ledger as _, LedgerInfo},
     token::StellarAssetClient,
 };
@@ -2067,6 +2067,7 @@ fn start_round_emits_r_start_event() {
     let (env, _admin, client, _token_id, _players) = setup_game(5, 2);
     set_ledger_sequence(&env, 1_000);
 
+    let _ = client.get_round(); // flush prior invocation's events from the log
     let before = env.events().all().len();
     client.start_round();
     let after = env.events().all().len();
@@ -2257,24 +2258,24 @@ fn resolve_round_tie_2_players_exactly_one_survives() {
 }
 
 #[test]
-fn resolve_round_tie_2_players_opposite_seed_tails_survives() {
-    // Seed [1;32] → gen() & 1 == 1 → Tails survives.
-    let (env, client, heads_players, tails_players) =
-        run_resolution_scenario(1, 1);
-
-    seed_contract_prng(&env, &client.address, [1u8; 32]);
+fn resolve_round_minority_tails_survives() {
+    // 3 Heads vs 1 Tails → Tails is the minority → Tails survives (no tie-break needed).
+    let (_env, client, heads_players, tails_players) =
+        run_resolution_scenario(3, 1);
 
     client.resolve_round();
 
     assert_eq!(client.get_arena_state().survivors_count, 1);
     assert!(
-        !client.get_user_state(&heads_players[0]).is_active,
-        "heads player must be eliminated when tails wins the tie-break"
-    );
-    assert!(
         client.get_user_state(&tails_players[0]).is_active,
-        "tails player must survive when tails wins the tie-break"
+        "tails player must survive as the minority"
     );
+    for h in &heads_players {
+        assert!(
+            !client.get_user_state(h).is_active,
+            "heads players must be eliminated as the majority"
+        );
+    }
 }
 
 #[test]
@@ -2338,13 +2339,10 @@ fn resolve_round_3_heads_7_tails_event_payload_correct() {
     // Topic is (RSLVD,); data tuple is
     // (round_number, heads_count, tails_count, outcome, eliminated_count, survivor_count, v)
     // We verify the topic symbol matches "RSLVD".
-    let (topics, _data) = last;
+    let (_contract, topics, _data) = last;
     let topic_sym: Symbol = soroban_sdk::symbol_short!("RSLVD");
-    assert_eq!(
-        topics.get(0).unwrap(),
-        soroban_sdk::Val::from(topic_sym),
-        "event topic must be RSLVD"
-    );
+    let got: Symbol = topics.get(0).unwrap().into_val(&env);
+    assert_eq!(got, topic_sym, "event topic must be RSLVD");
 }
 
 #[test]
@@ -2455,12 +2453,14 @@ fn resolve_round_produces_single_survivor() {
 #[test]
 fn resolve_round_single_survivor_cannot_submit_next_round_as_eliminated() {
     // Verify that eliminated players are correctly blocked in the next round.
+    // Use 2 heads vs 4 tails so that 2 heads players survive after resolution,
+    // giving us enough players (>= 2) to start round 2.
     let (env, client, _heads_players, tails_players) =
-        run_resolution_scenario(1, 3);
+        run_resolution_scenario(2, 4);
 
     client.resolve_round();
 
-    // Start round 2
+    // Start round 2 — requires at least 2 survivors, which we now have.
     set_ledger_sequence(&env, 200);
     client.start_round();
 

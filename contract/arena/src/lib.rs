@@ -146,29 +146,6 @@ enum DataKey {
     Winner(Address),
 }
 
-/// View of a single player's state within the current round.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UserStateView {
-    /// Whether the player has joined the arena (survivor entry exists).
-    pub is_survivor: bool,
-    /// Whether the player has submitted a choice for the current round.
-    pub has_submitted: bool,
-    /// The player's choice for the current round (only meaningful if has_submitted is true).
-    pub choice: Choice,
-    /// Whether the player has already claimed their prize.
-    pub has_claimed: bool,
-}
-
-/// Aggregate view of the full contract state, useful for frontend polling.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FullStateView {
-    pub config: ArenaConfig,
-    pub round: RoundState,
-    pub is_paused: bool,
-}
-
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -571,52 +548,6 @@ impl ArenaContract {
         );
 
         Ok(round)
-    }
-
-    /// Return the state of a specific player for the current round.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `player` - Address of the player to query.
-    ///
-    /// # Errors
-    /// * [`ArenaError::NotInitialized`] — Contract not initialised.
-    ///
-    /// # Authorization
-    /// None — read-only, open to any caller.
-    pub fn get_user_state(env: Env, player: Address) -> Result<UserStateView, ArenaError> {
-        let round = get_round(&env)?;
-        let is_survivor = storage(&env).has(&DataKey::Survivor(player.clone()));
-        let submission_key = DataKey::Submission(round.round_number, player.clone());
-        let has_submitted = storage(&env).has(&submission_key);
-        let choice = storage(&env)
-            .get(&submission_key)
-            .unwrap_or(Choice::Heads); // default is irrelevant when has_submitted is false
-        let has_claimed = storage(&env).has(&DataKey::PrizeClaimed(player));
-        Ok(UserStateView {
-            is_survivor,
-            has_submitted,
-            choice,
-            has_claimed,
-        })
-    }
-
-    /// Return a combined snapshot of config, round state, and pause status.
-    ///
-    /// # Errors
-    /// * [`ArenaError::NotInitialized`] — Contract not initialised.
-    ///
-    /// # Authorization
-    /// None — read-only, open to any caller.
-    pub fn get_full_state(env: Env) -> Result<FullStateView, ArenaError> {
-        let config = get_config(&env)?;
-        let round = get_round(&env)?;
-        let is_paused = env.storage().instance().get(&PAUSED_KEY).unwrap_or(false);
-        Ok(FullStateView {
-            config,
-            round,
-            is_paused,
-        })
     }
 
     pub fn claim(env: Env, winner: Address) -> Result<i128, ArenaError> {
