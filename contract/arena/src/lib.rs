@@ -147,7 +147,6 @@ enum DataKey {
 }
 
 
-
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -192,6 +191,19 @@ impl ArenaContract {
         if env.storage().instance().has(&ADMIN_KEY) {
             panic!("already initialized");
         }
+
+        admin.require_auth();
+
+        env.storage().instance().set(&ADMIN_KEY, &admin);
+    }
+
+    pub fn init_factory(env: Env, factory: Address, admin: Address) {
+        if env.storage().instance().has(&ADMIN_KEY) {
+            panic!("already initialized");
+        }
+
+        factory.require_auth();
+
         env.storage().instance().set(&ADMIN_KEY, &admin);
     }
 
@@ -607,8 +619,6 @@ impl ArenaContract {
 
         Ok(round)
     }
-
-
 
     pub fn claim(env: Env, winner: Address) -> Result<i128, ArenaError> {
         require_not_paused(&env)?;

@@ -10,9 +10,11 @@ const TREASURY_KEY: Symbol = symbol_short!("TREAS");
 const TOPIC_PAYOUT_EXECUTED: Symbol = symbol_short!("PAYOUT");
 const TOPIC_DUST_COLLECTED: Symbol = symbol_short!("DUST");
 
-// ── TTL constants for persistent payout records (~31 days) ───────────────────
+// ── TTL constants ─────────────────────────────────────────────────────────────
 const PAYOUT_TTL_THRESHOLD: u32 = 100_000;
 const PAYOUT_TTL_EXTEND_TO: u32 = 535_680;
+const INSTANCE_TTL_THRESHOLD: u32 = 100_000;
+const INSTANCE_TTL_EXTEND_TO: u32 = 535_680;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,6 +59,19 @@ impl PayoutContract {
         if env.storage().instance().has(&ADMIN_KEY) {
             panic!("already initialized");
         }
+
+        admin.require_auth();
+
+        env.storage().instance().set(&ADMIN_KEY, &admin);
+    }
+
+    pub fn init_factory(env: Env, factory: Address, admin: Address) {
+        if env.storage().instance().has(&ADMIN_KEY) {
+            panic!("already initialized");
+        }
+
+        factory.require_auth();
+
         env.storage().instance().set(&ADMIN_KEY, &admin);
     }
 
@@ -150,6 +165,9 @@ impl PayoutContract {
         env.storage()
             .persistent()
             .extend_ttl(&payout_key, PAYOUT_TTL_THRESHOLD, PAYOUT_TTL_EXTEND_TO);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
 
         // Transfer tokens to winner if a token address is registered for this currency.
         if let Some(token_address) = env
