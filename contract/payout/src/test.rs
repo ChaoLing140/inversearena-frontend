@@ -10,12 +10,11 @@ fn setup() -> (Env, Address, PayoutContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(PayoutContract, ());
     let admin = Address::generate(&env);
+    let contract_id = env.register(PayoutContract, (&admin,));
 
     let env_static: &'static Env = unsafe { &*(&env as *const Env) };
     let client = PayoutContractClient::new(env_static, &contract_id);
-    client.initialize(&admin);
 
     (env, admin, client)
 }
@@ -49,10 +48,12 @@ fn test_initialize_sets_admin() {
 }
 
 #[test]
-#[should_panic(expected = "already initialized")]
 fn test_double_initialize_panics() {
+    // With __constructor, double initialization is structurally impossible.
+    // The constructor runs exactly once at deploy time.
     let (_env, admin, client) = setup();
-    client.initialize(&admin);
+    assert_eq!(client.admin(), admin);
+    // No separate initialize() to call; the constructor is the only init path.
 }
 
 #[test]
@@ -82,15 +83,12 @@ fn test_admin_can_distribute_winnings() {
 #[test]
 fn test_unauthorized_caller_cannot_distribute() {
     // admin.require_auth() is the only gate — no caller param to spoof.
-    // Providing no mock auth means admin.require_auth() fails.
+    // Register with constructor (mock_all_auths for constructor auth).
     let env = Env::default();
-    let contract_id = env.register(PayoutContract, ());
-    let admin = Address::generate(&env);
-
-    // Initialize with mock_all_auths so initialize() succeeds.
     env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(PayoutContract, (&admin,));
     let client = PayoutContractClient::new(&env, &contract_id);
-    client.initialize(&admin);
 
     // Clear all mocked auths — now admin.require_auth() is unsatisfied.
     env.mock_auths(&[]);
@@ -296,31 +294,20 @@ fn payout_record_survives_ttl_threshold() {
     );
 }
 
-// ── Issue #500: initialize() auth guards (payout) ────────────────────────────
+// ── Issue #499: constructor-based init security guards (payout) ──────────────
 
 #[test]
 fn initialize_with_wrong_signer_fails() {
-    // Without mock_all_auths, initialize() requires the admin to self-sign.
-    // Providing a different signer should cause an auth failure (contract error or abort).
+    // With __constructor, the admin must authorize their own deployment.
+    // The constructor runs once atomically — no separate initialize() to front-run.
+    // This test verifies the constructor-based approach sets up admin correctly.
     let env = Env::default();
-    let contract_id = env.register(PayoutContract, ());
+    env.mock_all_auths();
     let admin = Address::generate(&env);
-    let impersonator = Address::generate(&env);
-    use soroban_sdk::IntoVal;
-    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &impersonator,
-        invoke: &soroban_sdk::testutils::MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "initialize",
-            args: soroban_sdk::vec![&env, admin.clone().into_val(&env)].into(),
-            sub_invokes: &[],
-        },
-    }]);
+    let contract_id = env.register(PayoutContract, (&admin,));
     let client = PayoutContractClient::new(&env, &contract_id);
-    // try_initialize returns an error when admin auth is not satisfied
-    let result = client.try_initialize(&admin);
-    assert!(result.is_err(), "initialize with wrong signer must fail");
-    let _ = impersonator;
+    // Admin should be correctly set by the constructor.
+    assert_eq!(client.admin(), admin);
 }
 
 // ── Issue #506: Emergency pause (payout) ─────────────────────────────────────

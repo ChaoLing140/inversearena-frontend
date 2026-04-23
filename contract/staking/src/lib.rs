@@ -73,10 +73,7 @@ impl StakingContract {
     ///
     /// # Authorization
     /// Requires auth from the `admin` address to prevent front-running.
-    pub fn initialize(env: Env, admin: Address, token: Address) {
-        if env.storage().instance().has(&ADMIN_KEY) {
-            panic!("already initialized");
-        }
+    pub fn __constructor(env: Env, admin: Address, token: Address) {
         admin.require_auth();
         env.storage().instance().set(&ADMIN_KEY, &admin);
         env.storage().instance().set(&TOKEN_KEY, &token);

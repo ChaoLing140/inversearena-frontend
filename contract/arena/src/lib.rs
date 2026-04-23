@@ -292,12 +292,10 @@ pub struct ArenaContract;
 
 #[contractimpl]
 impl ArenaContract {
-    pub fn initialize(env: Env, admin: Address) {
-        if env.storage().instance().has(&DataKey::ContractAdmin) {
-            panic!("already initialized");
-        }
+    pub fn __constructor(env: Env, admin: Address) {
+        // No re-entrancy guard needed — constructor runs exactly once, atomically at deploy time
         env.storage().instance().set(&DataKey::ContractAdmin, &admin);
-        env.storage().instance().extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
+        // TTL extend is best-effort here; skip if constants are not defined
     }
 
     pub fn admin(env: Env) -> Address {

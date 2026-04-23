@@ -17,10 +17,8 @@ fn setup_test_env() -> (Env, ArenaContractClient<'static>, Address, Address) {
     env.mock_all_auths();
     
     let admin = Address::generate(&env);
-    let contract_id = env.register(ArenaContract, ());
+    let contract_id = env.register(ArenaContract, (&admin,));
     let client = ArenaContractClient::new(&env, &contract_id);
-    
-    client.initialize(&admin);
     
     let token_admin = Address::generate(&env);
     let token_id = env.register_stellar_asset_contract(token_admin.clone());

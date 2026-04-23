@@ -152,13 +152,8 @@ impl FactoryContract {
     ///
     /// # Authorization
     /// Requires auth from the admin address to prevent front-running.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&ADMIN_KEY) {
-            return Err(Error::AlreadyInitialized);
-        }
-
+    pub fn __constructor(env: Env, admin: Address) -> Result<(), Error> {
         admin.require_auth();
-
         env.storage().instance().set(&ADMIN_KEY, &admin);
         env.storage()
             .instance()
@@ -411,6 +406,11 @@ impl FactoryContract {
         let salt = env.crypto().sha256(&salt_bin);
 
         // Deploy the contract.
+        #[cfg(not(test))]
+        let arena_address = env.deployer()
+            .with_current_contract(salt)
+            .deploy_v2(wasm_hash, (env.current_contract_address(),));
+
         #[cfg(test)]
         let arena_address = {
             let _ = wasm_hash; // consumed via WasmHashNotSet check above; not used in test path
@@ -418,26 +418,13 @@ impl FactoryContract {
                 .deployer()
                 .with_current_contract(salt)
                 .deployed_address();
-            env.register_at(&addr, ArenaContract, ());
+            env.register_at(&addr, ArenaContract, (env.current_contract_address(),));
             addr
         };
 
-        #[cfg(not(test))]
-        let arena_address = env.deployer().with_current_contract(salt).deploy(wasm_hash);
-
         // ── Initialisation ──────────────────────────────────────────────────────
-
-        // 1. Call initialize so that the factory becomes the admin.
-        env.invoke_contract::<()>(
-            &arena_address,
-            &soroban_sdk::Symbol::new(&env, "initialize"),
-            soroban_sdk::vec![&env, env.current_contract_address().into_val(&env)],
-        );
-
-        // Use a generic client to call init and initialize.
-        // Note: In a real implementation, you'd use the generated client from the arena contract.
-        // For simplicity here, we use invoke_contract if we don't have the client imported.
-        // However, better to assume the workspace allows cross-contract calls.
+        // Note: __constructor runs at deploy time (deploy_v2/register_at), so
+        // there is no separate initialize() call needed here.
 
         env.invoke_contract::<()>(
             &arena_address,

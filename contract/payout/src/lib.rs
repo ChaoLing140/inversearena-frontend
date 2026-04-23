@@ -60,13 +60,8 @@ impl PayoutContract {
         789
     }
 
-    pub fn initialize(env: Env, admin: Address) {
-        if env.storage().instance().has(&ADMIN_KEY) {
-            panic!("already initialized");
-        }
-
+    pub fn __constructor(env: Env, admin: Address) {
         admin.require_auth();
-
         env.storage().instance().set(&ADMIN_KEY, &admin);
     }
 

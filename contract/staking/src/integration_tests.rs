@@ -33,9 +33,7 @@ fn setup() -> (
     token_admin.mint(&staker1, &1_000_000_000i128);
     token_admin.mint(&staker2, &1_000_000_000i128);
 
-    let contract_id = env.register(StakingContract, ());
-    let client = StakingContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &token_address);
+    let contract_id = env.register(StakingContract, (&admin, &token_address));
 
     let env_static: &'static Env = unsafe { &*(&env as *const Env) };
     (

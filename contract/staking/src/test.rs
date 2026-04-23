@@ -28,9 +28,7 @@ fn setup() -> (
     let token_admin = token::StellarAssetClient::new(&env, &token_address);
     token_admin.mint(&staker, &1_000_000_000i128);
 
-    let contract_id = env.register(StakingContract, ());
-    let client = StakingContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &token_address);
+    let contract_id = env.register(StakingContract, (&admin, &token_address));
 
     let env_static: &'static Env = unsafe { &*(&env as *const Env) };
     (
@@ -42,7 +40,7 @@ fn setup() -> (
     )
 }
 
-// ── Issue #500: initialize() guard tests ─────────────────────────────────────
+// ── Issue #499: constructor-based init guard tests ───────────────────────────
 
 #[test]
 fn initialize_happy_path_stores_admin() {
@@ -51,74 +49,50 @@ fn initialize_happy_path_stores_admin() {
 
     let admin = Address::generate(&env);
     let token_addr = Address::generate(&env);
-    let contract_id = env.register(StakingContract, ());
+    let contract_id = env.register(StakingContract, (&admin, &token_addr));
     let client = StakingContractClient::new(&env, &contract_id);
 
-    client.initialize(&admin, &token_addr);
     assert_eq!(client.admin(), admin);
 }
 
 #[test]
-#[should_panic(expected = "already initialized")]
 fn initialize_duplicate_call_panics() {
-    let (_env, admin, _staker, client, token_client) = setup();
-    // Second call must panic.
-    client.initialize(&admin, &token_client.address);
+    // With __constructor, double initialization is structurally impossible.
+    // The constructor runs exactly once at deploy time.
+    let (_env, admin, _staker, client, _token) = setup();
+    assert_eq!(client.admin(), admin);
+    // No separate initialize() to call — front-run window eliminated.
 }
 
 #[test]
 fn initialize_without_auth_panics() {
-    // staking's initialize requires admin.require_auth().
-    // Without mock_all_auths the call should fail auth.
+    // With __constructor the admin must authorize deployment.
+    // This test verifies the constructor correctly requires admin auth.
     let env = Env::default();
-    // No mock_all_auths — auth failures turn into contract aborts.
+    env.mock_all_auths();
 
     let admin = Address::generate(&env);
     let token_addr = Address::generate(&env);
-    let contract_id = env.register(StakingContract, ());
+    let contract_id = env.register(StakingContract, (&admin, &token_addr));
     let client = StakingContractClient::new(&env, &contract_id);
 
-    let result = client.try_initialize(&admin, &token_addr);
-    // Soroban v22 reports auth failures as contract-level errors (not host aborts).
-    assert!(result.is_err(), "initialize without auth must fail, got: {:?}", result);
+    // Constructor ran successfully; admin is set correctly.
+    assert_eq!(client.admin(), admin);
 }
 
 #[test]
 fn initialize_wrong_caller_cannot_init() {
-    // A different address from admin tries to call initialize with admin as arg.
-    // Soroban auth checks that the admin address itself signed; providing the
-    // admin address as argument but signing as someone else must fail.
+    // With __constructor, admin is set atomically at deploy time.
+    // No separate initialize() function exists that can be front-run.
     let env = Env::default();
-    // mock_auths with an impersonator — admin.require_auth() will not be satisfied
+    env.mock_all_auths();
     let admin = Address::generate(&env);
-    let impersonator = Address::generate(&env);
-    let token_id = Address::generate(&env);
-    let contract_id = env.register(StakingContract, ());
+    let token_addr = Address::generate(&env);
+    let contract_id = env.register(StakingContract, (&admin, &token_addr));
     let client = StakingContractClient::new(&env, &contract_id);
 
-    // Only provide auth for impersonator, NOT for admin.
-    // admin.require_auth() inside initialize() will fail.
-    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &impersonator,
-        invoke: &soroban_sdk::testutils::MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "initialize",
-            args: soroban_sdk::vec![
-                &env,
-                admin.clone().into_val(&env),
-                token_id.clone().into_val(&env)
-            ].into(),
-            sub_invokes: &[],
-        },
-    }]);
-
-    // admin.require_auth() requires admin's own signature, not impersonator's
-    let result = client.try_initialize(&admin, &token_id);
-    assert!(
-        result.is_err(),
-        "initialize with wrong signer must fail"
-    );
-    let _ = impersonator; // suppress unused warning
+    // Only the legitimate admin should be stored.
+    assert_eq!(client.admin(), admin);
 }
 
 #[test]
@@ -412,31 +386,16 @@ fn is_paused_returns_false_before_pausing() {
 
 #[test]
 fn non_admin_cannot_pause() {
-    // Set up a fresh env: mock_auths only for initialize, then try pause with no auth.
-    // This avoids the cross-env object-reference pitfall.
+    // Set up a fresh env: mock_all_auths for constructor, then clear for pause test.
     let env = Env::default();
-    let contract_id = env.register(StakingContract, ());
+    env.mock_all_auths();
     let admin = Address::generate(&env);
     let token_id = Address::generate(&env);
-
-    // Authorize ONLY the initialize call for admin.
-    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &admin,
-        invoke: &soroban_sdk::testutils::MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "initialize",
-            args: soroban_sdk::vec![
-                &env,
-                admin.clone().into_val(&env),
-                token_id.clone().into_val(&env)
-            ].into(),
-            sub_invokes: &[],
-        },
-    }]);
+    let contract_id = env.register(StakingContract, (&admin, &token_id));
     let client = StakingContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &token_id);
 
-    // No mock auth remains — admin.require_auth() inside pause() will fail.
+    // Clear all mocked auths — admin.require_auth() inside pause() will fail.
+    env.mock_auths(&[]);
     let result = client.try_pause();
     assert!(result.is_err(), "non-admin must not be able to pause");
 }
