@@ -53,6 +53,13 @@ pub enum Choice {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArenaConfig {
+    pub entry_fee: i128,
+    pub token_address: Address,
+    pub min_players: u32,
+    pub max_players: u32,
+    pub round_duration_seconds: u64,
+    pub host: Address,
+    pub created_at: u64,
     pub round_speed_in_ledgers: u32,
 }
 
@@ -84,14 +91,38 @@ pub struct ArenaContract;
 impl ArenaContract {
     // ── Initialisation ───────────────────────────────────────────────────────
 
-    pub fn init(env: Env, round_speed_in_ledgers: u32) -> Result<(), ArenaError> {
+    pub fn init(
+        env: Env,
+        entry_fee: i128,
+        token_address: Address,
+        min_players: u32,
+        max_players: u32,
+        round_duration_seconds: u64,
+        host: Address,
+        round_speed_in_ledgers: u32,
+    ) -> Result<(), ArenaError> {
         if storage(&env).has(&DataKey::Config) {
             return Err(ArenaError::AlreadyInitialized);
+        }
+
+        if entry_fee <= 0 {
+            panic!("entry_fee must be positive");
+        }
+        if min_players < 2 {
+            panic!("min_players must be >= 2");
+        }
+        if max_players < min_players {
+            panic!("max_players must be >= min_players");
+        }
+        if round_duration_seconds < 30 {
+            panic!("round_duration_seconds must be >= 30");
         }
 
         if round_speed_in_ledgers == 0 {
             return Err(ArenaError::InvalidRoundSpeed);
         }
+
+        let created_at = env.ledger().timestamp();
 
         env.storage()
             .instance()
@@ -100,6 +131,13 @@ impl ArenaContract {
         storage(&env).set(
             &DataKey::Config,
             &ArenaConfig {
+                entry_fee,
+                token_address,
+                min_players,
+                max_players,
+                round_duration_seconds,
+                host,
+                created_at,
                 round_speed_in_ledgers,
             },
         );
@@ -261,10 +299,8 @@ impl ArenaContract {
             .instance()
             .set(&EXECUTE_AFTER_KEY, &execute_after);
 
-        env.events().publish(
-            (TOPIC_UPGRADE_PROPOSED,),
-            (new_wasm_hash, execute_after),
-        );
+        env.events()
+            .publish((TOPIC_UPGRADE_PROPOSED,), (new_wasm_hash, execute_after));
     }
 
     /// Execute a previously proposed upgrade after the 48-hour timelock.
@@ -301,8 +337,7 @@ impl ArenaContract {
         env.events()
             .publish((TOPIC_UPGRADE_EXECUTED,), new_wasm_hash.clone());
 
-        env.deployer()
-            .update_current_contract_wasm(new_wasm_hash);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     /// Cancel a pending upgrade proposal. Admin-only.

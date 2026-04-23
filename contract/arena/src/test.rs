@@ -66,6 +66,17 @@ fn create_client<'a>(env: &'a Env) -> ArenaContractClient<'a> {
     ArenaContractClient::new(env, &contract_id)
 }
 
+fn init_arena<'a>(env: &'a Env, client: &ArenaContractClient<'a>, round_speed: u32) {
+    let host = Address::generate(env);
+    let token = Address::generate(env);
+    client.init(&1_000_0000, &token, &2, &64, &60, &host, &round_speed);
+}
+
+fn init_arena_with_auth<'a>(env: &'a Env, client: &ArenaContractClient<'a>, round_speed: u32) {
+    env.mock_all_auths();
+    init_arena(env, client, round_speed);
+}
+
 /// Advance ledger and immediately re-apply mock_all_auths.
 /// Call this in proptest tests before any submit_choice invocation.
 fn advance_ledger_with_auth(env: &Env, sequence_number: u32) {
@@ -124,7 +135,7 @@ fn basic_init_and_round_cycle() {
     let env = make_env();
     let client = create_client(&env);
     set_ledger(&env, 100);
-    client.init(&5);
+    init_arena(&env, &client, 5);
     let r = client.start_round();
     assert_eq!(r.round_number, 1);
     assert!(r.active);
@@ -143,7 +154,7 @@ fn start_round_records_start_and_deadline_ledgers() {
 
     set_ledger_sequence(&env, 100);
 
-    client.init(&5);
+    init_arena(&env, &client, 5);
     let round = client.start_round();
 
     assert_eq!(
@@ -168,7 +179,7 @@ fn submit_choice_allows_submission_on_deadline_ledger() {
     let player = Address::generate(&env);
 
     set_ledger_sequence(&env, 200);
-    client.init(&5);
+    init_arena(&env, &client, 5);
     client.start_round();
 
     set_ledger_sequence(&env, 205);
@@ -187,7 +198,7 @@ fn submit_choice_rejects_late_submissions() {
     let player = Address::generate(&env);
 
     set_ledger_sequence(&env, 300);
-    client.init(&5);
+    init_arena(&env, &client, 5);
     client.start_round();
 
     set_ledger_sequence(&env, 306);
@@ -202,7 +213,7 @@ fn timeout_round_is_callable_by_anyone_after_deadline() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 400);
-    client.init(&3);
+    init_arena(&env, &client, 5);
     client.start_round();
 
     set_ledger_sequence(&env, 404);
@@ -220,7 +231,7 @@ fn timeout_round_rejects_calls_before_deadline() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 500);
-    client.init(&4);
+    init_arena(&env, &client, 5);
     client.start_round();
 
     set_ledger_sequence(&env, 504);
@@ -235,7 +246,7 @@ fn new_round_can_start_after_timeout() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 600);
-    client.init(&2);
+    init_arena(&env, &client, 5);
     client.start_round();
 
     set_ledger_sequence(&env, 603);
@@ -274,7 +285,7 @@ fn state_survives_expected_game_duration() {
     // Initialise and start a round at ledger 1_000.  Use a large round window
     // (20_000 ledgers) so the round remains open when we advance the ledger.
     set_ledger_sequence(&env, 1_000);
-    client.init(&20_000);
+    init_arena(&env, &client, 5);
     client.start_round();
 
     // Submit a choice while still within the round window.
@@ -434,7 +445,7 @@ proptest! {
         let env = make_env();
         let client = create_client(&env);
         set_ledger(&env, 1_000);
-        client.init(&round_speed);
+        init_arena_with_auth(&env, &client, round_speed);
 
         let observed = run_cycles(&env, &client, round_speed, cycles);
 
@@ -460,7 +471,7 @@ proptest! {
         let client = create_client(&env);
 
         advance_ledger_with_auth(&env, 500);
-        client.init(&round_speed);
+        init_arena_with_auth(&env, &client, round_speed);
         client.start_round();
 
         let mut players: Vec<Address> = Vec::new();
@@ -493,7 +504,7 @@ proptest! {
         let client = create_client(&env);
 
         advance_ledger_with_auth(&env, 1_000);
-        client.init(&round_speed);
+        init_arena_with_auth(&env, &client, round_speed);
         client.start_round();
 
         let player = Address::generate(&env);
@@ -522,7 +533,7 @@ proptest! {
         let client = create_client(&env);
 
         advance_ledger_with_auth(&env, 200);
-        client.init(&round_speed);
+        init_arena_with_auth(&env, &client, round_speed);
         client.start_round();
 
         let player   = Address::generate(&env);
@@ -550,7 +561,7 @@ proptest! {
         let client = create_client(&env);
 
         advance_ledger_with_auth(&env, 0);
-        client.init(&round_speed);
+        init_arena_with_auth(&env, &client, round_speed);
         client.start_round();
 
         for _ in 0..player_count {
@@ -582,7 +593,7 @@ proptest! {
         let client = create_client(&env);
 
         advance_ledger_with_auth(&env, 1_000);
-        client.init(&round_speed);
+        init_arena_with_auth(&env, &client, round_speed);
         client.start_round();
 
         for _ in 0..early_submitters {
@@ -623,8 +634,10 @@ proptest! {
         let env = make_env();
         let client = create_client(&env);
 
-        client.init(&first_speed);
-        let result = client.try_init(&second_speed);
+        init_arena_with_auth(&env, &client, first_speed);
+        let host = Address::generate(&env);
+        let token = Address::generate(&env);
+        let result = client.try_init(&1_000_0000, &token, &2, &64, &60, &host, &second_speed);
 
         prop_assert_eq!(
             result,
@@ -656,7 +669,7 @@ proptest! {
         let client = create_client(&env);
 
         set_ledger(&env, start_ledger);
-        client.init(&round_speed);
+        init_arena_with_auth(&env, &client, round_speed);
         let round = client.start_round();
 
         prop_assert_eq!(round.round_start_ledger, start_ledger);
@@ -680,7 +693,7 @@ proptest! {
         let client = create_client(&env);
 
         set_ledger(&env, 100);
-        client.init(&round_speed);
+        init_arena_with_auth(&env, &client, round_speed);
         client.start_round();
 
         set_ledger(&env, 100 + round_speed);
@@ -704,13 +717,17 @@ fn smoke_10000_round_cycles_without_panic() {
     let client = create_client(&env);
 
     set_ledger(&env, 1_000);
-    client.init(&SPEED);
+    init_arena(&env, &client, SPEED);
 
     let numbers = run_cycles(&env, &client, SPEED, CYCLES);
 
     assert_eq!(numbers.len(), CYCLES as usize);
     for (i, &n) in numbers.iter().enumerate() {
-        assert_eq!(n, (i + 1) as u32, "round number out of sequence at index {i}");
+        assert_eq!(
+            n,
+            (i + 1) as u32,
+            "round number out of sequence at index {i}"
+        );
     }
 }
 
@@ -723,7 +740,7 @@ fn timeout_round_succeeds_one_ledger_after_deadline() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 1000);
-    client.init(&10);
+    init_arena(&env, &client, 5);
     client.start_round();
 
     // deadline = 1010; advance one past it
@@ -742,7 +759,7 @@ fn timeout_round_succeeds_just_after_deadline() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 500);
-    client.init(&5);
+    init_arena(&env, &client, 5);
     client.start_round(); // deadline = 505
 
     set_ledger_sequence(&env, 506);
@@ -759,7 +776,7 @@ fn timeout_round_fails_at_deadline_ledger() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 200);
-    client.init(&4);
+    init_arena(&env, &client, 5);
     client.start_round(); // deadline = 204
 
     set_ledger_sequence(&env, 204); // exactly at deadline — still open
@@ -774,7 +791,7 @@ fn timeout_round_fails_before_deadline() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 100);
-    client.init(&20);
+    init_arena(&env, &client, 5);
     client.start_round(); // deadline = 120
 
     set_ledger_sequence(&env, 115);
@@ -790,7 +807,7 @@ fn timeout_round_fails_when_no_active_round() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 50);
-    client.init(&3);
+    init_arena(&env, &client, 5);
     // do NOT call start_round
 
     set_ledger_sequence(&env, 200);
@@ -809,7 +826,7 @@ fn round_state_is_consistent_after_timeout() {
     let player = Address::generate(&env);
 
     set_ledger_sequence(&env, 300);
-    client.init(&5); // deadline = 305
+    init_arena(&env, &client, 5); // deadline = 305
     client.start_round();
 
     // player submits within window
@@ -841,7 +858,7 @@ fn player_choice_accessible_after_timeout() {
     let player = Address::generate(&env);
 
     set_ledger_sequence(&env, 400);
-    client.init(&3);
+    init_arena(&env, &client, 5);
     client.start_round(); // deadline = 403
 
     set_ledger_sequence(&env, 401);
@@ -863,7 +880,7 @@ fn timeout_works_when_no_player_submitted() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 600);
-    client.init(&5);
+    init_arena(&env, &client, 5);
     let round = client.start_round(); // deadline = 605
     assert_eq!(round.total_submissions, 0);
 
@@ -882,7 +899,7 @@ fn timeout_with_multiple_absent_players_resolves_gracefully() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 700);
-    client.init(&8); // deadline = 708
+    init_arena(&env, &client, 5); // deadline = 708
     client.start_round();
 
     // generate some player addresses but have none submit
@@ -913,7 +930,7 @@ fn submit_choice_rejected_after_deadline() {
     let player = Address::generate(&env);
 
     set_ledger_sequence(&env, 800);
-    client.init(&5); // deadline = 805
+    init_arena(&env, &client, 5); // deadline = 805
     client.start_round();
 
     set_ledger_sequence(&env, 806);
@@ -929,7 +946,7 @@ fn new_round_starts_after_timeout_with_fresh_state() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 900);
-    client.init(&5); // deadline = 905
+    init_arena(&env, &client, 5); // deadline = 905
     client.start_round();
 
     set_ledger_sequence(&env, 906);
@@ -953,7 +970,7 @@ fn start_round_fails_when_active_round_exists() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 1000);
-    client.init(&10);
+    init_arena(&env, &client, 5);
     client.start_round();
 
     set_ledger_sequence(&env, 1005);
@@ -969,7 +986,7 @@ fn timeout_round_fails_on_already_timed_out_round() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 1100);
-    client.init(&3); // deadline = 1103
+    init_arena(&env, &client, 5); // deadline = 1103
     client.start_round();
 
     set_ledger_sequence(&env, 1104);
@@ -986,7 +1003,7 @@ fn round_number_increments_across_timeout_cycles() {
     let client = create_client(&env);
 
     set_ledger_sequence(&env, 0);
-    client.init(&2);
+    init_arena(&env, &client, 5);
 
     for expected_round in 1u32..=5 {
         let start_seq = (expected_round - 1) * 10;
@@ -1013,7 +1030,7 @@ fn partial_submissions_preserved_after_timeout() {
     let player_c = Address::generate(&env);
 
     set_ledger_sequence(&env, 2000);
-    client.init(&10); // deadline = 2010
+    init_arena(&env, &client, 5); // deadline = 2010
     client.start_round();
 
     // only player_a and player_b submit
