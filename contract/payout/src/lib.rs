@@ -1,13 +1,14 @@
 #![no_std]
 
 use soroban_sdk::{
-    Address, Env, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
+    Address, BytesN, Env, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
     panic_with_error, symbol_short, token,
 };
 
 const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
 const TREASURY_KEY: Symbol = symbol_short!("TREAS");
 const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
+const PAYOUT_COUNT_KEY: Symbol = symbol_short!("P_COUNT");
 const TOPIC_PAYOUT_EXECUTED: Symbol = symbol_short!("PAYOUT");
 const TOPIC_DUST_COLLECTED: Symbol = symbol_short!("DUST");
 const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
@@ -25,6 +26,8 @@ pub enum DataKey {
     CurrencyToken(Symbol),
     Payout(Symbol, u32, u32, Address),
     PrizePayout(u32),
+    PayoutHistory(u64),
+    ArenaPayout(u64),
 }
 
 #[contracttype]
@@ -34,6 +37,25 @@ pub struct PayoutData {
     pub amount: i128,
     pub currency: Symbol,
     pub paid: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PayoutReceipt {
+    pub arena_id: u64,
+    pub winner: Address,
+    pub amount: i128,
+    pub fee: i128,
+    pub timestamp: u64,
+    pub tx_hash_hint: Option<BytesN<32>>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PayoutPage {
+    pub items: Vec<PayoutReceipt>,
+    pub next_cursor: Option<u64>,
+    pub has_more: bool,
 }
 
 #[contracterror]
@@ -104,7 +126,12 @@ impl PayoutContract {
     /// Admin-only. Used so `distribute_winnings` can transfer tokens on-chain.
     pub fn set_currency_token(env: Env, symbol: Symbol, token_address: Address) {
         let admin = Self::admin(env.clone());
-        if env.storage().instance().get::<_, bool>(&PAUSED_KEY).unwrap_or(false) {
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&PAUSED_KEY)
+            .unwrap_or(false)
+        {
             panic_with_error!(&env, PayoutError::Paused);
         }
         admin.require_auth();
@@ -166,9 +193,11 @@ impl PayoutContract {
             paid: true,
         };
         env.storage().persistent().set(&payout_key, &payout_data);
-        env.storage()
-            .persistent()
-            .extend_ttl(&payout_key, PAYOUT_TTL_THRESHOLD, PAYOUT_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &payout_key,
+            PAYOUT_TTL_THRESHOLD,
+            PAYOUT_TTL_EXTEND_TO,
+        );
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
@@ -188,6 +217,8 @@ impl PayoutContract {
 
         env.events()
             .publish((TOPIC_PAYOUT_EXECUTED,), (winner, amount, currency));
+
+        record_receipt(&env, pool_id as u64, payout_data.winner, amount, 0, None);
 
         Ok(())
     }
@@ -271,6 +302,36 @@ impl PayoutContract {
         Ok(())
     }
 
+    pub fn get_payout_history(env: Env, cursor: Option<u64>, limit: u32) -> PayoutPage {
+        let count: u64 = env.storage().instance().get(&PAYOUT_COUNT_KEY).unwrap_or(0);
+        let start = cursor.unwrap_or(0).min(count);
+        let clamped_limit = limit.min(100);
+        let end = start.saturating_add(clamped_limit as u64).min(count);
+        let mut items = Vec::new(&env);
+
+        for index in start..end {
+            if let Some(receipt) = env
+                .storage()
+                .persistent()
+                .get::<_, PayoutReceipt>(&DataKey::PayoutHistory(index))
+            {
+                items.push_back(receipt);
+            }
+        }
+
+        PayoutPage {
+            items,
+            next_cursor: if end < count { Some(end) } else { None },
+            has_more: end < count,
+        }
+    }
+
+    pub fn get_payout_by_arena(env: Env, arena_id: u64) -> Option<PayoutReceipt> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ArenaPayout(arena_id))
+    }
+
     pub fn is_prize_distributed(env: Env, game_id: u32) -> bool {
         env.storage().instance().has(&DataKey::PrizePayout(game_id))
     }
@@ -295,24 +356,44 @@ impl PayoutContract {
 
     /// Return whether the contract is currently paused.
     pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&PAUSED_KEY)
-            .unwrap_or(false)
+        env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
     }
 }
 
 /// Return `Err(PayoutError::Paused)` if the contract is currently paused.
 fn require_not_paused(env: &Env) -> Result<(), PayoutError> {
-    if env
-        .storage()
-        .instance()
-        .get(&PAUSED_KEY)
-        .unwrap_or(false)
-    {
+    if env.storage().instance().get(&PAUSED_KEY).unwrap_or(false) {
         return Err(PayoutError::Paused);
     }
     Ok(())
+}
+
+fn record_receipt(
+    env: &Env,
+    arena_id: u64,
+    winner: Address,
+    amount: i128,
+    fee: i128,
+    tx_hash_hint: Option<BytesN<32>>,
+) {
+    let index: u64 = env.storage().instance().get(&PAYOUT_COUNT_KEY).unwrap_or(0);
+    let receipt = PayoutReceipt {
+        arena_id,
+        winner,
+        amount,
+        fee,
+        timestamp: env.ledger().timestamp(),
+        tx_hash_hint,
+    };
+    env.storage()
+        .persistent()
+        .set(&DataKey::PayoutHistory(index), &receipt);
+    env.storage()
+        .persistent()
+        .set(&DataKey::ArenaPayout(arena_id), &receipt);
+    env.storage()
+        .instance()
+        .set(&PAYOUT_COUNT_KEY, &(index + 1));
 }
 
 #[cfg(test)]

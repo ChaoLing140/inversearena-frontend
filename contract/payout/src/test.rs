@@ -99,10 +99,11 @@ fn test_unauthorized_caller_cannot_distribute() {
     let ctx = symbol_short!("ARENA_1");
     let currency = symbol_short!("XLM");
 
-    let result = client.try_distribute_winnings(
-        &ctx, &1u32, &1u32, &winner, &1000i128, &currency,
+    let result = client.try_distribute_winnings(&ctx, &1u32, &1u32, &winner, &1000i128, &currency);
+    assert!(
+        result.is_err(),
+        "non-admin signer must be rejected by admin.require_auth()"
     );
-    assert!(result.is_err(), "non-admin signer must be rejected by admin.require_auth()");
 }
 
 #[test]
@@ -112,14 +113,7 @@ fn test_zero_amount_returns_error() {
     let ctx = symbol_short!("ARENA_1");
     let currency = symbol_short!("XLM");
 
-    let result = client.try_distribute_winnings(
-        &ctx,
-        &1u32,
-        &1u32,
-        &winner,
-        &0i128,
-        &currency,
-    );
+    let result = client.try_distribute_winnings(&ctx, &1u32, &1u32, &winner, &0i128, &currency);
     assert_eq!(result, Err(Ok(PayoutError::InvalidAmount)));
 }
 
@@ -130,14 +124,7 @@ fn test_negative_amount_returns_error() {
     let ctx = symbol_short!("ARENA_1");
     let currency = symbol_short!("XLM");
 
-    let result = client.try_distribute_winnings(
-        &ctx,
-        &1u32,
-        &1u32,
-        &winner,
-        &-1i128,
-        &currency,
-    );
+    let result = client.try_distribute_winnings(&ctx, &1u32, &1u32, &winner, &-1i128, &currency);
     assert_eq!(result, Err(Ok(PayoutError::InvalidAmount)));
 }
 
@@ -150,14 +137,7 @@ fn test_idempotency_prevents_double_pay_same_key() {
 
     client.distribute_winnings(&ctx, &7u32, &2u32, &winner, &1000i128, &currency);
 
-    let second = client.try_distribute_winnings(
-        &ctx,
-        &7u32,
-        &2u32,
-        &winner,
-        &9999i128,
-        &currency,
-    );
+    let second = client.try_distribute_winnings(&ctx, &7u32, &2u32, &winner, &9999i128, &currency);
     assert_eq!(second, Err(Ok(PayoutError::AlreadyPaid)));
 }
 
@@ -342,9 +322,7 @@ fn pause_blocks_distribute_winnings() {
     let winner = Address::generate(&env);
     let ctx = symbol_short!("CTX");
     let currency = symbol_short!("XLM");
-    let result = client.try_distribute_winnings(
-        &ctx, &1u32, &1u32, &winner, &100i128, &currency,
-    );
+    let result = client.try_distribute_winnings(&ctx, &1u32, &1u32, &winner, &100i128, &currency);
     assert_eq!(result, Err(Ok(PayoutError::Paused)));
 }
 
@@ -367,9 +345,7 @@ fn unpause_restores_distribute_winnings() {
     let ctx = symbol_short!("CTX");
     let currency = symbol_short!("XLM");
     // distribute_winnings requires no actual token transfer, it just records
-    let result = client.try_distribute_winnings(
-        &ctx, &1u32, &1u32, &winner, &100i128, &currency,
-    );
+    let result = client.try_distribute_winnings(&ctx, &1u32, &1u32, &winner, &100i128, &currency);
     assert!(result.is_ok(), "should succeed after unpause");
 }
 
@@ -379,4 +355,62 @@ fn read_functions_unaffected_by_payout_pause() {
     client.pause();
     assert_eq!(client.admin(), admin);
     assert!(client.is_paused());
+}
+
+#[test]
+fn payout_history_empty_page() {
+    let (_env, _admin, client) = setup();
+    let page = client.get_payout_history(&None, &10u32);
+
+    assert!(page.items.is_empty());
+    assert_eq!(page.next_cursor, None);
+    assert!(!page.has_more);
+}
+
+#[test]
+fn payout_history_records_single_payout_and_arena_lookup() {
+    let (env, _admin, client) = setup();
+    let winner = Address::generate(&env);
+    let ctx = symbol_short!("ARENA_1");
+    let currency = symbol_short!("XLM");
+
+    client.distribute_winnings(&ctx, &7u32, &1u32, &winner, &1234i128, &currency);
+
+    let page = client.get_payout_history(&None, &10u32);
+    assert_eq!(page.items.len(), 1);
+    let receipt = page.items.get(0).unwrap();
+    assert_eq!(receipt.arena_id, 7);
+    assert_eq!(receipt.winner, winner);
+    assert_eq!(receipt.amount, 1234);
+    assert_eq!(receipt.fee, 0);
+    assert_eq!(receipt.tx_hash_hint, None);
+    assert_eq!(client.get_payout_by_arena(&7u64), Some(receipt));
+}
+
+#[test]
+fn payout_history_paginates_and_caps_limit() {
+    let (env, _admin, client) = setup();
+    let ctx = symbol_short!("ARENA_1");
+    let currency = symbol_short!("XLM");
+
+    for i in 0..105u32 {
+        client.distribute_winnings(
+            &ctx,
+            &i,
+            &1u32,
+            &Address::generate(&env),
+            &(100i128 + i as i128),
+            &currency,
+        );
+    }
+
+    let first = client.get_payout_history(&None, &500u32);
+    assert_eq!(first.items.len(), 100);
+    assert_eq!(first.next_cursor, Some(100));
+    assert!(first.has_more);
+
+    let second = client.get_payout_history(&first.next_cursor, &10u32);
+    assert_eq!(second.items.len(), 5);
+    assert_eq!(second.next_cursor, None);
+    assert!(!second.has_more);
 }

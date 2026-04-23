@@ -354,7 +354,7 @@ impl FactoryContract {
         currency: Address,
         round_speed: u32,
         capacity: u32,
-        is_private: bool,
+        join_deadline: u64,
     ) -> Result<Address, Error> {
         let admin = require_admin(&env)?;
         require_not_paused(&env)?;
@@ -451,7 +451,7 @@ impl FactoryContract {
         env.invoke_contract::<()>(
             &arena_address,
             &soroban_sdk::symbol_short!("init"),
-            soroban_sdk::vec![&env, round_speed.into_val(&env), stake.into_val(&env), is_private.into_val(&env)],
+            soroban_sdk::vec![&env, round_speed.into_val(&env), stake.into_val(&env), join_deadline.into_val(&env)],
         );
 
         env.invoke_contract::<()>(

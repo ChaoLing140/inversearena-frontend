@@ -26,7 +26,7 @@ fn setup_test_env() -> (Env, ArenaContractClient<'static>, Address, Address) {
     let token_id = env.register_stellar_asset_contract(token_admin.clone());
     
     client.set_token(&token_id);
-    client.init(&10, &100, &false); // 10 ledgers speed, 100 stake
+    client.init(&10, &100, &(env.ledger().timestamp() + 7200)); // 10 ledgers speed, 100 stake, 2h deadline
     
     (env, client, admin, token_id)
 }
