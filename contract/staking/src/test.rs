@@ -4,8 +4,8 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    IntoVal,
-    testutils::Address as _, Address, Env,
+    Address, Env, IntoVal,
+    testutils::Address as _,
     token::{self, StellarAssetClient},
 };
 
@@ -80,7 +80,11 @@ fn initialize_without_auth_panics() {
 
     let result = client.try_initialize(&admin, &token_addr);
     // Soroban v22 reports auth failures as contract-level errors (not host aborts).
-    assert!(result.is_err(), "initialize without auth must fail, got: {:?}", result);
+    assert!(
+        result.is_err(),
+        "initialize without auth must fail, got: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -107,17 +111,15 @@ fn initialize_wrong_caller_cannot_init() {
                 &env,
                 admin.clone().into_val(&env),
                 token_id.clone().into_val(&env)
-            ].into(),
+            ]
+            .into(),
             sub_invokes: &[],
         },
     }]);
 
     // admin.require_auth() requires admin's own signature, not impersonator's
     let result = client.try_initialize(&admin, &token_id);
-    assert!(
-        result.is_err(),
-        "initialize with wrong signer must fail"
-    );
+    assert!(result.is_err(), "initialize with wrong signer must fail");
     let _ = impersonator; // suppress unused warning
 }
 
@@ -306,10 +308,7 @@ fn stake_emits_one_event() {
     client.stake(&staker, &100_000_000i128);
     let after = env.events().all().len();
 
-    assert!(
-        after > before,
-        "stake() must emit at least one event"
-    );
+    assert!(after > before, "stake() must emit at least one event");
 }
 
 #[test]
@@ -325,10 +324,7 @@ fn unstake_emits_one_event() {
     client.unstake(&staker, &shares);
     let after = env.events().all().len();
 
-    assert!(
-        after > before,
-        "unstake() must emit at least one event"
-    );
+    assert!(after > before, "unstake() must emit at least one event");
 }
 
 #[test]
@@ -344,7 +340,10 @@ fn stake_and_unstake_each_emit_exactly_one_new_event() {
     let unstake_events = env.events().all().len();
 
     assert!(stake_events >= 1, "stake() must emit at least one event");
-    assert!(unstake_events >= 1, "unstake() must emit at least one event");
+    assert!(
+        unstake_events >= 1,
+        "unstake() must emit at least one event"
+    );
 }
 
 // ── Issue #506: emergency pause tests ────────────────────────────────────────
@@ -429,7 +428,8 @@ fn non_admin_cannot_pause() {
                 &env,
                 admin.clone().into_val(&env),
                 token_id.clone().into_val(&env)
-            ].into(),
+            ]
+            .into(),
             sub_invokes: &[],
         },
     }]);
@@ -456,4 +456,47 @@ fn read_functions_unaffected_by_pause() {
     assert!(client.get_position(&staker).shares > 0);
 }
 
+#[test]
+fn get_staker_stats_returns_active_staker_snapshot() {
+    let (_env, _admin, staker, client, _token_client) = setup();
+    client.stake(&staker, &250_000_000i128);
 
+    let stats = client.get_staker_stats(&staker);
+
+    assert_eq!(stats.staked_amount, 250_000_000);
+    assert_eq!(stats.pending_rewards, 0);
+    assert_eq!(stats.unlock_at, 0);
+    assert_eq!(stats.total_claimed_rewards, 0);
+    assert_eq!(stats.stake_share_bps, 10_000);
+}
+
+#[test]
+fn get_staker_stats_returns_zero_for_unknown_staker() {
+    let (env, _admin, _staker, client, _token_client) = setup();
+    let unknown = Address::generate(&env);
+
+    assert_eq!(
+        client.get_staker_stats(&unknown),
+        StakerStats {
+            staked_amount: 0,
+            pending_rewards: 0,
+            unlock_at: 0,
+            total_claimed_rewards: 0,
+            stake_share_bps: 0,
+        }
+    );
+}
+
+#[test]
+fn get_staker_stats_reports_even_pool_share() {
+    let (env, _admin, first, client, _token_client) = setup();
+    let second = Address::generate(&env);
+    let token_admin = token::StellarAssetClient::new(&env, &client.token());
+    token_admin.mint(&second, &1_000_000_000i128);
+
+    client.stake(&first, &100_000_000i128);
+    client.stake(&second, &100_000_000i128);
+
+    assert_eq!(client.get_staker_stats(&first).stake_share_bps, 5_000);
+    assert_eq!(client.get_staker_stats(&second).stake_share_bps, 5_000);
+}
